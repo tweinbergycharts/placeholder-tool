@@ -18,6 +18,23 @@ BOX_H_PT = 12
 PAD_X_PT = 2
 TITLE_TOP = 55
 
+# Module size presets — dimensions at 1x, will be doubled for 2x export
+PRESETS = {
+    "full":            None,   # no crop — use full PDF canvas
+    # Portrait
+    "portrait_1x1/8":  (544, 72),
+    "portrait_1/2x1/8": (262, 71),
+    "portrait_1x1/4":  (544, 148),
+    "portrait_1/2x1/4": (262, 148),
+    "portrait_1x1/2":  (544, 300),
+    "portrait_1/2x1/2": (262, 300),
+    # Landscape
+    "landscape_1x1/2":  (724, 220),
+    "landscape_1/2x1/2": (352, 220),
+    "landscape_1/2x1/4": (352, 108),
+    "landscape_1/4x1/4": (166, 108),
+}
+
 
 def rasterise(pdf_bytes, scale=2):
     """Render PDF page to PNG, return (base64 png string, width px, height px)."""
@@ -127,13 +144,19 @@ def detect_boxes(pdf_bytes, scale=2):
         os.unlink(tmp_path)
 
 
-def export_png(bg_b64, boxes, box_color="#D9D9D9"):
-    """Bake boxes onto background image, return PNG bytes."""
+def export_png(bg_b64, boxes, box_color="#D9D9D9", preset="full", scale=2):
+    """Bake boxes onto background image, crop to preset, return PNG bytes."""
     img_data = base64.b64decode(bg_b64)
     img = Image.open(io.BytesIO(img_data)).convert("RGB")
     draw = ImageDraw.Draw(img)
     for b in boxes:
         draw.rectangle([b["x"], b["y"], b["x"]+b["w"], b["y"]+b["h"]], fill=box_color)
+    # Crop to preset if specified (top-left anchored, dimensions doubled for 2x)
+    dims = PRESETS.get(preset)
+    if dims:
+        w_px = dims[0] * scale
+        h_px = dims[1] * scale
+        img = img.crop((0, 0, w_px, h_px))
     buf = io.BytesIO()
     img.save(buf, "PNG")
     return buf.getvalue()
@@ -202,6 +225,9 @@ HTML = r"""<!DOCTYPE html>
   .tb-btn.active{background:rgba(255,255,255,.18);border-color:rgba(255,255,255,.5)}
   .tb-btn.green{background:var(--green);border-color:var(--green)}
   .tb-btn.green:hover{opacity:.88}
+  .tb-label{font-family:var(--mono);font-size:11px;color:rgba(255,255,255,.55);white-space:nowrap}
+  #tb-preset{font-family:var(--mono);font-size:11px;padding:5px 8px;border:1px solid rgba(255,255,255,.25);background:rgba(255,255,255,.08);color:#fff;border-radius:2px;outline:none;cursor:pointer;max-width:220px}
+  #tb-preset option,#tb-preset optgroup{background:#2A2A2A;color:#fff}
   #tb-hint{font-family:var(--mono);font-size:10px;color:rgba(255,255,255,.45);margin-left:auto}
   #box-count{font-family:var(--mono);font-size:10px;color:rgba(255,255,255,.55)}
 
@@ -292,6 +318,27 @@ HTML = r"""<!DOCTYPE html>
     <div class="sep"></div>
     <span id="box-count"></span>
     <span id="tb-hint">Click box to select · Drag to move · Drag edges to resize · Del to delete</span>
+    <div class="sep"></div>
+    <label class="tb-label">Crop to module</label>
+    <select id="tb-preset">
+      <optgroup label="No crop">
+        <option value="full">Full page (no crop)</option>
+      </optgroup>
+      <optgroup label="Portrait">
+        <option value="portrait_1/2x1/8">Portrait 1/2 × 1/8 — 262×71</option>
+        <option value="portrait_1x1/8">Portrait 1 × 1/8 — 544×72</option>
+        <option value="portrait_1/2x1/4">Portrait 1/2 × 1/4 — 262×148</option>
+        <option value="portrait_1x1/4">Portrait 1 × 1/4 — 544×148</option>
+        <option value="portrait_1/2x1/2">Portrait 1/2 × 1/2 — 262×300</option>
+        <option value="portrait_1x1/2">Portrait 1 × 1/2 — 544×300</option>
+      </optgroup>
+      <optgroup label="Landscape">
+        <option value="landscape_1/4x1/4">Landscape 1/4 × 1/4 — 166×108</option>
+        <option value="landscape_1/2x1/4">Landscape 1/2 × 1/4 — 352×108</option>
+        <option value="landscape_1/2x1/2">Landscape 1/2 × 1/2 — 352×220</option>
+        <option value="landscape_1x1/2">Landscape 1 × 1/2 — 724×220</option>
+      </optgroup>
+    </select>
     <button class="tb-btn green" id="tb-export">↓ Export PNG</button>
   </div>
   <div id="canvas-outer">
@@ -394,7 +441,7 @@ function launchEditor(){
   $('editor-wrap').classList.add('on');
   const img=$('bg-img');
   img.src='data:image/png;base64,'+bgB64;
-  img.onload=()=>{renderBoxes()};
+  img.onload=()=>{renderBoxes();renderCropOverlay()};
 }
 
 function renderBoxes(){
@@ -567,7 +614,8 @@ $('tb-export').addEventListener('click',async()=>{
   $('tb-export').disabled=true;
   $('tb-export').innerHTML='<span class="spin"></span>Exporting…';
   try{
-    const payload={bg:bgB64,boxes:boxes,color:boxColor};
+    const preset=$('tb-preset').value;
+    const payload={bg:bgB64,boxes:boxes,color:boxColor,preset:preset,scale:scale};
     const res=await fetch('/export',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -588,8 +636,39 @@ $('tb-export').addEventListener('click',async()=>{
   }
 });
 
+// ── Crop preview overlay ──────────────────────────────────────────────────────
+const PRESETS = {
+  "full": null,
+  "portrait_1/2x1/8": [262,71], "portrait_1x1/8": [544,72],
+  "portrait_1/2x1/4": [262,148], "portrait_1x1/4": [544,148],
+  "portrait_1/2x1/2": [262,300], "portrait_1x1/2": [544,300],
+  "landscape_1/4x1/4": [166,108], "landscape_1/2x1/4": [352,108],
+  "landscape_1/2x1/2": [352,220], "landscape_1x1/2": [724,220],
+};
+
+function renderCropOverlay(){
+  const existing = document.getElementById('crop-overlay');
+  if(existing) existing.remove();
+  const preset = $('tb-preset') ? $('tb-preset').value : 'full';
+  const dims = PRESETS[preset];
+  if(!dims || !bgB64) return;
+  const ds = displayScale();
+  const w = dims[0] * scale * ds;
+  const h = dims[1] * scale * ds;
+  const el = document.createElement('div');
+  el.id = 'crop-overlay';
+  el.style.cssText = `position:absolute;top:0;left:0;width:${w}px;height:${h}px;
+    border:2px dashed rgba(61,122,90,0.8);pointer-events:none;z-index:10;
+    box-shadow:0 0 0 9999px rgba(0,0,0,0.25);`;
+  $('canvas-inner').appendChild(el);
+}
+
+document.addEventListener('change', e => {
+  if(e.target.id === 'tb-preset') renderCropOverlay();
+});
+
 // ── Re-render on window resize ────────────────────────────────────────────────
-window.addEventListener('resize',()=>{if(bgB64)renderBoxes()});
+window.addEventListener('resize',()=>{if(bgB64){renderBoxes();renderCropOverlay();}});
 </script>
 </body>
 </html>
@@ -681,8 +760,14 @@ class Handler(BaseHTTPRequestHandler):
         body   = self.rfile.read(length)
         try:
             payload   = json.loads(body)
-            png_bytes = export_png(payload["bg"], payload["boxes"], payload.get("color", "#D9D9D9"))
-            b64       = base64.b64encode(png_bytes).decode()
+            png_bytes = export_png(
+                payload["bg"],
+                payload["boxes"],
+                payload.get("color", "#D9D9D9"),
+                payload.get("preset", "full"),
+                payload.get("scale", 2)
+            )
+            b64 = base64.b64encode(png_bytes).decode()
             self._json({"image": b64})
         except Exception as e:
             self._json({"error": str(e)}, 500)
